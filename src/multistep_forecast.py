@@ -115,7 +115,11 @@ def make_windows(series: np.ndarray, window: int, horizon: int = 1) -> Tuple[np.
     -----
     The number of samples is N = T - window - horizon + 1.
     """
-    raise NotImplementedError
+    series = np.asarray(series)
+    N = len(series) - window - horizon + 1
+    X = np.stack([series[i : i + window] for i in range(N)])[:, :, np.newaxis]
+    y = np.stack([series[i + window : i + window + horizon] for i in range(N)])
+    return X, y
 
 
 def time_split(
@@ -146,7 +150,19 @@ def time_split(
     ValueError
         If fractions are invalid or produce empty splits.
     """
-    raise NotImplementedError
+    if not (0 < train_frac < 1 and 0 < val_frac < 1 and train_frac + val_frac < 1):
+        raise ValueError("train_frac and val_frac must be positive and sum to less than 1.")
+    N = len(X)
+    n_train = int(N * train_frac)
+    n_val = int(N * val_frac)
+    n_test = N - n_train - n_val
+    if n_train == 0 or n_val == 0 or n_test == 0:
+        raise ValueError("One or more splits are empty. Adjust fractions or use more data.")
+    return (
+        (X[:n_train], y[:n_train]),
+        (X[n_train : n_train + n_val], y[n_train : n_train + n_val]),
+        (X[n_train + n_val :], y[n_train + n_val :]),
+    )
 
 
 # ----------------------------
@@ -190,7 +206,18 @@ def build_model(
     - For output_dim>1, use a Dense(output_dim) output layer (vector prediction).
     - Keep loss as MSE, metric MAE.
     """
-    raise NotImplementedError
+    model = tf.keras.Sequential([
+        tf.keras.layers.LSTM(n_units, input_shape=(window, 1)),
+        tf.keras.layers.Dropout(dropout),
+        tf.keras.layers.Dense(dense_units, activation="relu"),
+        tf.keras.layers.Dense(output_dim),
+    ])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+        loss="mse",
+        metrics=["mae"],
+    )
+    return model
 
 
 def train_model(
@@ -243,7 +270,20 @@ def train_model(
     - Use EarlyStopping (recommended) to reduce overfitting.
     - Do not shuffle time.
     """
-    raise NotImplementedError
+    tf.keras.utils.set_random_seed(seed)
+    X, y = make_windows(series, window, horizon)
+    (X_train, y_train), (X_val, y_val), (X_test, y_test) = time_split(X, y, train_frac, val_frac)
+    model = build_model(window, output_dim=horizon)
+    early_stop = tf.keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)
+    model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[early_stop],
+        verbose=verbose,
+    )
+    return model, X_test, y_test
 
 
 # ----------------------------
@@ -278,7 +318,14 @@ def recursive_rollout_one_step(
     2) append it to the window
     3) shift window by 1
     """
-    raise NotImplementedError
+    window = init_window.copy().astype(np.float32)
+    forecast = []
+    for _ in range(horizon):
+        x = window[np.newaxis, :, np.newaxis]
+        pred = float(model.predict(x, verbose=0)[0, 0])
+        forecast.append(pred)
+        window = np.append(window[1:], pred)
+    return np.array(forecast, dtype=np.float32)
 
 
 def recursive_rollout_k_step_stride_k(
@@ -314,7 +361,14 @@ def recursive_rollout_k_step_stride_k(
 
     This reduces recursion depth (H/K calls).
     """
-    raise NotImplementedError
+    window = init_window.copy().astype(np.float32)
+    forecast = []
+    for _ in range(horizon // k):
+        x = window[np.newaxis, :, np.newaxis]
+        block = model.predict(x, verbose=0)[0]
+        forecast.extend(block.tolist())
+        window = np.append(window[k:], block)
+    return np.array(forecast, dtype=np.float32)
 
 
 def recursive_rollout_k_step_stride_1(
@@ -351,7 +405,14 @@ def recursive_rollout_k_step_stride_1(
 
     This uses the K-step model as a one-step generator.
     """
-    raise NotImplementedError
+    window = init_window.copy().astype(np.float32)
+    forecast = []
+    for _ in range(horizon):
+        x = window[np.newaxis, :, np.newaxis]
+        pred = float(model.predict(x, verbose=0)[0, 0])
+        forecast.append(pred)
+        window = np.append(window[1:], pred)
+    return np.array(forecast, dtype=np.float32)
 
 
 # ----------------------------
